@@ -4,7 +4,6 @@
 import argparse
 import gzip
 import json
-import os
 import re
 import sys
 from collections import Counter
@@ -12,7 +11,6 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import List, Optional, Set, Tuple
 
-import requests
 from tqdm import tqdm
 
 # ---------------------------------------------------------------------- #
@@ -53,7 +51,6 @@ def load_local_titles(json_path: Optional[str]) -> Set[str]:
     if not json_path:
         return set()
     path = Path(json_path).expanduser()
-    print(f"DEBUG load_local_titles: path={path}, exists={path.exists()}")
     if not path.exists():
         print(f"⚠️  Local JSON file not found: {path}", file=sys.stderr)
         return set()
@@ -117,10 +114,7 @@ def process_file(
         local_fuzzy_threshold: float,
         require_unique: bool,
         dry_run: bool,
-        online_verify: bool,
-        api_key: Optional[str],
-        use_spacy: bool,
-        debug_local: bool) -> Tuple[List[str], int]:
+        use_spacy: bool) -> Tuple[List[str], int]:
     lines = file_path.read_text(encoding="utf-8", errors="ignore").splitlines()
     candidates: Counter[str] = Counter()
     seen: Set[str] = set()
@@ -137,12 +131,12 @@ def process_file(
                 continue
             if require_unique and phrase in seen:
                 continue
-            # 1️⃣  Check local JSON (exact or fuzzy)
+            # 1.  Check local JSON (exact or fuzzy)
             if local_titles and ((phrase in local_titles) or (local_fuzzy and any(fuzzy_score(phrase, lt) >= local_fuzzy_threshold for lt in local_titles))):
                 if is_likely_movie(phrase, min_words):
                     # Capital-letter heuristic: require uppercase only for 1-2 words
                     if len(phrase.split()) <= 2:
-                        m = re.search(r"" + re.escape(phrase) + r"", line)
+                        m = re.search(r"\b" + re.escape(phrase) + r"\b", line, re.IGNORECASE)
                         if m:
                             substr = line[m.start():m.end()]
                             if not any(ch.isupper() for ch in substr):
@@ -153,9 +147,9 @@ def process_file(
                     seen.add(phrase)
                     continue
 
-# 2️⃣  Whitelist / heuristic with capital-letter check  Whitelist / heuristic with capital-letter check  Whitelist / heuristic with capital-letter check  Whitelist / heuristic with capital-letter check
+            # 2.  Whitelist / heuristic with capital-letter check
             if phrase in whitelist or is_likely_movie(phrase, min_words):
-                m = re.search(r"\b" + re.escape(phrase) + r"\b", line)
+                m = re.search(r"\b" + re.escape(phrase) + r"\b", line, re.IGNORECASE)
                 if m:
                     substr = line[m.start():m.end()]
                     if not any(ch.isupper() for ch in substr):
@@ -206,16 +200,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--local-fuzzy-threshold", type=float, default=0.97,
                    help="Fuzzy threshold for local JSON (default 0.97)")
 
-    p.add_argument("--online-verify", action="store_true")
-    p.add_argument("--api-key", help="TMDb API key (needed if --online-verify)")
 
     p.add_argument("--use-spacy", action="store_true", help="Enable spaCy WORK_OF_ART NER")
     p.add_argument("--spacy-model", default="en_core_web_lg",
                    help="spaCy model to load (default en_core_web_lg)")
 
     p.add_argument("--dry-run", action="store_true")
-    p.add_argument("--debug-local", action="store_true",
-                   help="Print similarity scores for local matching")
     return p.parse_args()
 
 def main() -> None:
@@ -245,10 +235,7 @@ def main() -> None:
         local_fuzzy_threshold=args.local_fuzzy_threshold,
         require_unique=args.require_unique,
         dry_run=args.dry_run,
-        online_verify=args.online_verify,
-        api_key=args.api_key,
-        use_spacy=args.use_spacy and _NLP is not None,
-        debug_local=args.debug_local,
+        use_spacy=args.use_spacy and _NLP is not None
     )
 if __name__ == "__main__":
     main()
