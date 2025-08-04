@@ -7,15 +7,9 @@ from tqdm import tqdm
 from textblob import TextBlob
 import re
 
-nlp = spacy.load("en_core_web_sm")
-
-COMMENTS_FOLDER = "./comments"
 MASTER_LIST_PATH = "./tmdb_master_list.csv"
-OUTPUT_PATH = "./ner_movie_recommendations.csv"
-SUMMARY_PATH = "./ner_summary_by_tier.csv"
-TIER_CHART_PATH = "./tier_distribution_chart.png"
 
-
+# Normalize movie title for matching
 def normalize_title(title):
     title = os.path.splitext(title)[0]
     title = title.lower()
@@ -24,14 +18,18 @@ def normalize_title(title):
     title = re.sub(r"\s+", " ", title).strip()
     return title
 
+nlp = spacy.load("en_core_web_sm")
 
-MASTER_LIST_PATH = "./tmdb_master_list.csv"
+# Load and normalize the master list
+df_master = pd.read_csv(MASTER_LIST_PATH)
 df_master["Normalized Title"] = df_master["Movie Title"].astype(str).apply(normalize_title)
 valid_titles = set(df_master["Normalized Title"])
+print("✅ Loaded and normalized TMDb master list")
 
 recommendations = []
 rejected_titles = defaultdict(lambda: {"Count": 0, "Reason": ""})
 
+COMMENTS_FOLDER = "./comments"
 comment_files = [f for f in os.listdir(COMMENTS_FOLDER) if f.endswith(".txt")]
 total_files = len(comment_files)
 print(f"🔄 Starting processing of {total_files} files...")
@@ -55,12 +53,12 @@ for filename in tqdm(comment_files, desc="Processing comments", unit="file"):
                     candidate = normalize_title(ent.text)
                     if candidate and candidate != watched_title and candidate in valid_titles:
                         tier = (
-    "Viral" if sentiment_score > 0.85 else
-    "Hot" if sentiment_score > 0.6 else
-    "Trending" if sentiment_score > 0.4 else
-    "Cult" if 0.2 < sentiment_score <= 0.4 else
-    "Other"
-)
+                            "Viral" if sentiment_score > 0.85 else
+                            "Hot" if sentiment_score > 0.6 else
+                            "Trending" if sentiment_score > 0.4 else
+                            "Cult" if sentiment_score > 0.2 else
+                            "Other"
+                        )
                         recommendations.append({
                             "Movie Title": candidate.title(),
                             "Source File": filename.replace(".txt", ""),
@@ -68,27 +66,15 @@ for filename in tqdm(comment_files, desc="Processing comments", unit="file"):
                             "Context": sentence_text,
                             "Full Comment": sentence_text,
                             "Already Watched": "Yes" if candidate in watched_titles else "No",
-                            "Tier": tier
+                            "Tier": tier,
+                            "Sentiment": round(sentiment_score, 3)
                         })
                     else:
                         reason = "Already Watched" if candidate == watched_title else ("Not in Master List" if candidate not in valid_titles else "Unknown")
                         rejected_titles[candidate]["Count"] += 1
                         rejected_titles[candidate]["Reason"] = reason
 
-print("\n⚠️ Top rejected titles (not matched to master list):")
-rejected_df = pd.DataFrame([
-    {"Rejected Title": k, "Count": v["Count"], "Reason": v["Reason"]} for k, v in sorted(rejected_titles.items(), key=lambda x: x[1]["Count"], reverse=True)
-])
-rejected_df.to_csv("rejected_titles_log.csv", index=False)
-
-# Suggest additions to master list based on high rejection count
-suggested_additions = rejected_df[(rejected_df["Reason"] == "Not in Master List") & (rejected_df["Count"] >= 3)]
-suggested_additions[["Rejected Title", "Count"]].to_csv("suggested_master_list_additions.csv", index=False)
-print("Top 10 shown below. Full log saved to rejected_titles_log.csv")
-print("Suggestions for master list additions saved to suggested_master_list_additions.csv")
-for title, data in sorted(rejected_titles.items(), key=lambda x: x[1]["Count"], reverse=True)[:10]:
-        print(f"- {title} ({data['Count']} times) - Reason: {data['Reason']}")
-
+# Aggregate
 counter = Counter((r["Movie Title"], r["Source File"]) for r in recommendations)
 aggregated_rows = []
 for (movie, source), count in counter.items():
@@ -101,17 +87,19 @@ for (movie, source), count in counter.items():
         "Full Comment": match["Full Comment"],
         "Already Watched": match["Already Watched"],
         "Tier": match["Tier"],
-        "Avg Sentiment": round(TextBlob(match["Full Comment"]).sentiment.polarity, 3)
+        "Avg Sentiment": match["Sentiment"]
     })
 
-
+# Output results
 df_output = pd.DataFrame(aggregated_rows).sort_values(by="Mentions", ascending=False)
-df_output.to_csv(OUTPUT_PATH, index=False)
+df_output.to_csv("ner_movie_recommendations.csv", index=False)
 
+# Tier summary
 tier_summary = df_output["Tier"].value_counts().reset_index()
 tier_summary.columns = ["Tier", "Count"]
-tier_summary.to_csv(SUMMARY_PATH, index=False)
+tier_summary.to_csv("ner_summary_by_tier.csv", index=False)
 
+# Plot bar chart
 plt.figure(figsize=(6, 4))
 colors = {"Viral": "purple", "Hot": "red", "Trending": "orange", "Cult": "blue", "Positive": "green", "Other": "gray"}
 bar_colors = [colors.get(tier, "gray") for tier in tier_summary["Tier"]]
@@ -120,10 +108,23 @@ plt.title("Recommendation Tier Distribution")
 plt.xlabel("Tier")
 plt.ylabel("Number of Recommendations")
 plt.tight_layout()
-plt.savefig(TIER_CHART_PATH)
+plt.savefig("tier_distribution_chart.png")
 plt.close()
 
+# Log rejections
+rejected_df = pd.DataFrame([
+    {"Rejected Title": k, "Count": v["Count"], "Reason": v["Reason"]} for k, v in sorted(rejected_titles.items(), key=lambda x: x[1]["Count"], reverse=True)
+])
+rejected_df.to_csv("rejected_titles_log.csv", index=False)
+
+# Suggest new entries
+suggested_additions = rejected_df[(rejected_df["Reason"] == "Not in Master List") & (rejected_df["Count"] >= 3)]
+suggested_additions[["Rejected Title", "Count"]].to_csv("suggested_master_list_additions.csv", index=False)
+
+# Done
 print(f"\n✅ Extracted {len(df_output)} entries across {total_files} files.")
-print(f"📄 Output saved to: {OUTPUT_PATH}")
-print(f"📊 Tier summary saved to: {SUMMARY_PATH}")
-print(f"🖼️ Tier chart saved to: {TIER_CHART_PATH}")
+print("📄 Output: ner_movie_recommendations.csv")
+print("📊 Summary: ner_summary_by_tier.csv")
+print("🖼️ Chart: tier_distribution_chart.png")
+print("📎 Rejections: rejected_titles_log.csv")
+print("🧠 Suggestions: suggested_master_list_additions.csv")
