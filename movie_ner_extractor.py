@@ -124,7 +124,8 @@ suggested_additions[["Rejected Title", "Count"]].to_csv("suggested_master_list_a
 # Merge approved additions into tmdb_master_list.csv
 APPROVED_FILE = "approved_master_additions.csv"
 if os.path.exists(APPROVED_FILE) and input("
-Do you want to merge approved additions into the master list? (y/n): ").strip().lower() == 'y':
+Do you want to merge approved additions into the master list? (y/n): ").strip().lower() == 'y': ").strip().lower() == 'y':
+
     approved_df = pd.read_csv(APPROVED_FILE)
     approved_df["Normalized Title"] = approved_df["Rejected Title"].astype(str).apply(normalize_title)
     new_titles = approved_df[~approved_df["Normalized Title"].isin(valid_titles)].copy()
