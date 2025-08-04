@@ -124,22 +124,25 @@ suggested_additions[["Rejected Title", "Count"]].to_csv("suggested_master_list_a
 # Merge approved additions into tmdb_master_list.csv
 APPROVED_FILE = "approved_master_additions.csv"
 if os.path.exists(APPROVED_FILE):
-    confirm = input("\nDo you want to merge approved additions into the master list? (y/n): ").strip().lower()
+    confirm = input("
+Do you want to merge approved additions into the master list? (y/n): ").strip().lower()
     if confirm == 'y':
-        approved_df = pd.read_csv(APPROVED_FILE)
-        approved_df["Normalized Title"] = approved_df["Rejected Title"].astype(str).apply(normalize_title)
-        new_titles = approved_df[~approved_df["Normalized Title"].isin(valid_titles)].copy()
-        if not new_titles.empty:
-            new_titles["Genre"] = "Suggested"
-            new_titles["Year"] = ""
-            new_titles["Language"] = ""
-            new_titles.rename(columns={"Rejected Title": "Movie Title"}, inplace=True)
-            new_titles = new_titles[["Movie Title", "Genre", "Year", "Language"]]
-            df_master = pd.concat([df_master[["Movie Title", "Genre", "Year", "Language"]], new_titles], ignore_index=True)
-            df_master.drop_duplicates(subset="Movie Title", inplace=True)
-            df_master.to_csv(MASTER_LIST_PATH, index=False)
-            print(f"📌 Added {len(new_titles)} approved suggestions to tmdb_master_list.csv")
+Do you want to merge approved additions into the master list? (y/n): ").strip().lower() == 'y': ").strip().lower() == 'y':
 
+    approved_df = pd.read_csv(APPROVED_FILE)
+    approved_df["Normalized Title"] = approved_df["Rejected Title"].astype(str).apply(normalize_title)
+    new_titles = approved_df[~approved_df["Normalized Title"].isin(valid_titles)].copy()
+    if not new_titles.empty:
+        new_titles["Genre"] = "Suggested"
+        new_titles["Year"] = ""
+        new_titles["Language"] = ""
+        new_titles.rename(columns={"Rejected Title": "Movie Title"}, inplace=True)
+        new_titles = new_titles[["Movie Title", "Genre", "Year", "Language"]]
+        df_master = pd.concat([df_master[["Movie Title", "Genre", "Year", "Language"]], new_titles], ignore_index=True)
+        df_master.drop_duplicates(subset="Movie Title", inplace=True)
+        df_master.to_csv(MASTER_LIST_PATH, index=False)
+        valid_titles = set(df_master["Movie Title"].astype(str).apply(normalize_title))
+        print(f"📌 Added {len(new_titles)} approved suggestions to tmdb_master_list.csv")
 print(f"\n✅ Extracted {len(df_output)} entries across {total_files} files.")
 print("📄 Output: ner_movie_recommendations.csv")
 print("📊 Summary: ner_summary_by_tier.csv")
