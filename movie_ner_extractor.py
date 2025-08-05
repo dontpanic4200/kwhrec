@@ -1,148 +1,211 @@
+# movie_recommendation_extractor.py
+
 import os
+import re
 import spacy
 import pandas as pd
 import matplotlib.pyplot as plt
 from collections import Counter, defaultdict
 from tqdm import tqdm
 from textblob import TextBlob
-import re
 
-MASTER_LIST_PATH = "./tmdb_master_list.csv"
+# --- Configuration ---
+CONFIG = {
+    "MASTER_LIST_PATH": "./tmdb_master_list.csv",
+    "COMMENTS_FOLDER": "./comments",
+    "OUTPUT_RECOMMENDATIONS": "ner_movie_recommendations.csv",
+    "OUTPUT_SUMMARY": "ner_summary_by_tier.csv",
+    "OUTPUT_REJECTIONS": "rejected_titles_log.csv",
+    "OUTPUT_SUGGESTIONS": "suggested_master_list_additions.csv",
+    "OUTPUT_CHART": "tier_distribution_chart.png",
+    "APPROVED_FILE": "approved_master_additions.csv",
+    "BLACKLIST_FILE": "blacklist.txt",
+    "AUTO_APPROVE": True,
+    "MIN_MENTIONS_FOR_APPROVAL": 3,
+    "ALLOWED_TIERS_FOR_APPROVAL": ["Viral", "Hot"]
+}
 
-# Normalize movie title for matching
-def normalize_title(title):
-    title = os.path.splitext(title)[0]
-    title = title.lower()
-    title = re.sub(r"\([^)]*\)", "", title)
-    title = re.sub(r"[^a-z0-9 ]", "", title)
-    title = re.sub(r"\s+", " ", title).strip()
-    return title
-
+# --- Initialization ---
 nlp = spacy.load("en_core_web_sm")
 
-# Load and normalize the master list
-df_master = pd.read_csv(MASTER_LIST_PATH)
-df_master["Normalized Title"] = df_master["Movie Title"].astype(str).apply(normalize_title)
-valid_titles = set(df_master["Normalized Title"])
-print("✅ Loaded and normalized TMDb master list")
+# --- Utility Functions ---
+def normalize_title(title):
+    title = os.path.splitext(title)[0].lower()
+    title = re.sub(r"\([^)]*\)", "", title)
+    title = re.sub(r"[^a-z0-9 ]", "", title)
+    return re.sub(r"\s+", " ", title).strip()
 
-recommendations = []
-rejected_titles = defaultdict(lambda: {"Count": 0, "Reason": ""})
+def get_sentiment_tier(score):
+    if score > 0.85:
+        return "Viral"
+    elif score > 0.6:
+        return "Hot"
+    elif score > 0.4:
+        return "Trending"
+    elif score > 0.2:
+        return "Cult"
+    return "Other"
 
-COMMENTS_FOLDER = "./comments"
-comment_files = [f for f in os.listdir(COMMENTS_FOLDER) if f.endswith(".txt")]
-total_files = len(comment_files)
-print(f"🔄 Starting processing of {total_files} files...")
+def load_master_list(path):
+    df = pd.read_csv(path)
+    df["Normalized Title"] = df["Movie Title"].astype(str).apply(normalize_title)
+    return df, set(df["Normalized Title"])
 
-watched_titles = {normalize_title(f) for f in comment_files}
+def load_blacklist(path):
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            return {normalize_title(line) for line in f if line.strip()}
+    return set()
 
-for filename in tqdm(comment_files, desc="Processing comments", unit="file"):
-    watched_title = normalize_title(filename)
-    with open(os.path.join(COMMENTS_FOLDER, filename), "r", encoding="utf-8") as f:
-        text = f.read()
+def extract_recommendations(comments_folder, valid_titles, watched_titles, blacklist):
+    recommendations = []
+    rejected_titles = defaultdict(lambda: {"Count": 0, "Reason": ""})
+    comment_files = [f for f in os.listdir(comments_folder) if f.endswith(".txt")]
 
-    doc = nlp(text)
-    for sent in doc.sents:
-        sentence_text = sent.text.strip()
-        sentiment_score = TextBlob(sentence_text).sentiment.polarity
+    for filename in tqdm(comment_files, desc="Processing comments", unit="file"):
+        watched_title = normalize_title(filename)
+        with open(os.path.join(comments_folder, filename), "r", encoding="utf-8") as file:
+            text = file.read()
 
-        if sentiment_score > 0.2:
-            sent_doc = nlp(sentence_text)
-            for ent in sent_doc.ents:
+        doc = nlp(text)
+        for sent in doc.sents:
+            sentence = sent.text.strip()
+            if len(sentence.split()) < 3:
+                continue
+            sentiment = TextBlob(sentence).sentiment.polarity
+            if sentiment <= 0.2:
+                continue
+
+            for ent in sent.ents:
                 if ent.label_ == "WORK_OF_ART":
                     candidate = normalize_title(ent.text)
-                    if candidate and candidate != watched_title and candidate in valid_titles:
-                        tier = (
-                            "Viral" if sentiment_score > 0.85 else
-                            "Hot" if sentiment_score > 0.6 else
-                            "Trending" if sentiment_score > 0.4 else
-                            "Cult" if sentiment_score > 0.2 else
-                            "Other"
-                        )
+                    if not candidate or candidate == watched_title:
+                        continue
+                    if candidate in blacklist:
+                        reason = "Blacklisted"
+                    elif candidate not in valid_titles:
+                        reason = "Not in Master List"
+                    else:
                         recommendations.append({
                             "Movie Title": candidate.title(),
                             "Source File": filename.replace(".txt", ""),
                             "Mentions": 1,
-                            "Context": sentence_text,
-                            "Full Comment": sentence_text,
+                            "Context": sentence,
+                            "Full Comment": sentence,
                             "Already Watched": "Yes" if candidate in watched_titles else "No",
-                            "Tier": tier,
-                            "Sentiment": round(sentiment_score, 3)
+                            "Tier": get_sentiment_tier(sentiment),
+                            "Sentiment": round(sentiment, 3)
                         })
-                    else:
-                        reason = "Already Watched" if candidate == watched_title else ("Not in Master List" if candidate not in valid_titles else "Unknown")
-                        rejected_titles[candidate]["Count"] += 1
-                        rejected_titles[candidate]["Reason"] = reason
+                        continue
 
-# Aggregate
-counter = Counter((r["Movie Title"], r["Source File"]) for r in recommendations)
-aggregated_rows = []
-for (movie, source), count in counter.items():
-    match = next(r for r in recommendations if r["Movie Title"] == movie and r["Source File"] == source)
-    aggregated_rows.append({
-        "Movie Title": movie,
-        "Source File": source,
-        "Mentions": count,
-        "Context Example": match["Context"],
-        "Full Comment": match["Full Comment"],
-        "Already Watched": match["Already Watched"],
-        "Tier": match["Tier"],
-        "Avg Sentiment": match["Sentiment"]
-    })
+                    rejected_titles[candidate]["Count"] += 1
+                    rejected_titles[candidate]["Reason"] = reason
 
-# Output results
-df_output = pd.DataFrame(aggregated_rows).sort_values(by="Mentions", ascending=False)
-df_output.to_csv("ner_movie_recommendations.csv", index=False)
+    return recommendations, rejected_titles
 
-# Tier summary
-tier_summary = df_output["Tier"].value_counts().reset_index()
-tier_summary.columns = ["Tier", "Count"]
-tier_summary.to_csv("ner_summary_by_tier.csv", index=False)
+def aggregate_recommendations(recommendations):
+    counter = Counter((r["Movie Title"], r["Source File"]) for r in recommendations)
+    lookup = {(r["Movie Title"], r["Source File"]): r for r in recommendations}
 
-# Plot bar chart
-plt.figure(figsize=(6, 4))
-colors = {"Viral": "purple", "Hot": "red", "Trending": "orange", "Cult": "blue", "Positive": "green", "Other": "gray"}
-bar_colors = [colors.get(tier, "gray") for tier in tier_summary["Tier"]]
-plt.bar(tier_summary["Tier"], tier_summary["Count"], color=bar_colors)
-plt.title("Recommendation Tier Distribution")
-plt.xlabel("Tier")
-plt.ylabel("Number of Recommendations")
-plt.tight_layout()
-plt.savefig("tier_distribution_chart.png")
-plt.close()
+    aggregated = []
+    for (movie, source), count in counter.items():
+        match = lookup[(movie, source)]
+        aggregated.append({
+            "Movie Title": movie,
+            "Source File": source,
+            "Mentions": count,
+            "Context Example": match["Context"],
+            "Full Comment": match["Full Comment"],
+            "Already Watched": match["Already Watched"],
+            "Tier": match["Tier"],
+            "Avg Sentiment": match["Sentiment"]
+        })
+    return pd.DataFrame(aggregated)
 
-# Log rejections
-rejected_df = pd.DataFrame([
-    {"Rejected Title": k, "Count": v["Count"], "Reason": v["Reason"]} for k, v in sorted(rejected_titles.items(), key=lambda x: x[1]["Count"], reverse=True)
-])
-rejected_df.to_csv("rejected_titles_log.csv", index=False)
+def save_outputs(df_output, rejected_titles):
+    df_output.to_csv(CONFIG["OUTPUT_RECOMMENDATIONS"], index=False)
 
-# Suggest new entries
-suggested_additions = rejected_df[(rejected_df["Reason"] == "Not in Master List") & (rejected_df["Count"] >= 3)]
-suggested_additions[["Rejected Title", "Count"]].to_csv("suggested_master_list_additions.csv", index=False)
+    summary = df_output["Tier"].value_counts().reset_index()
+    summary.columns = ["Tier", "Count"]
+    summary.to_csv(CONFIG["OUTPUT_SUMMARY"], index=False)
 
-# Merge approved additions into tmdb_master_list.csv
-APPROVED_FILE = "approved_master_additions.csv"
-if os.path.exists(APPROVED_FILE):
-    confirm = input("\nDo you want to merge approved additions into the master list? (y/n): ").strip().lower()
-    if confirm == 'y':
-        approved_df = pd.read_csv(APPROVED_FILE)
-        approved_df["Normalized Title"] = approved_df["Rejected Title"].astype(str).apply(normalize_title)
-        new_titles = approved_df[~approved_df["Normalized Title"].isin(valid_titles)].copy()
-        if not new_titles.empty:
-            new_titles["Genre"] = "Suggested"
-            new_titles["Year"] = ""
-            new_titles["Language"] = ""
-            new_titles.rename(columns={"Rejected Title": "Movie Title"}, inplace=True)
-            new_titles = new_titles[["Movie Title", "Genre", "Year", "Language"]]
-            df_master = pd.concat([df_master[["Movie Title", "Genre", "Year", "Language"]], new_titles], ignore_index=True)
-            df_master.drop_duplicates(subset="Movie Title", inplace=True)
-            df_master.to_csv(MASTER_LIST_PATH, index=False)
-            print(f"📌 Added {len(new_titles)} approved suggestions to tmdb_master_list.csv")
+    plt.figure(figsize=(6, 4))
+    colors = {"Viral": "purple", "Hot": "red", "Trending": "orange", "Cult": "blue", "Other": "gray"}
+    plt.bar(summary["Tier"], summary["Count"], color=[colors.get(t, "gray") for t in summary["Tier"]])
+    plt.title("Recommendation Tier Distribution")
+    plt.xlabel("Tier")
+    plt.ylabel("Number of Recommendations")
+    plt.tight_layout()
+    plt.savefig(CONFIG["OUTPUT_CHART"])
+    plt.close()
 
-print(f"\n✅ Extracted {len(df_output)} entries across {total_files} files.")
-print("📄 Output: ner_movie_recommendations.csv")
-print("📊 Summary: ner_summary_by_tier.csv")
-print("🖼️ Chart: tier_distribution_chart.png")
-print("📎 Rejections: rejected_titles_log.csv")
-print("🧠 Suggestions: suggested_master_list_additions.csv")
+    rejected_df = pd.DataFrame([
+        {"Rejected Title": k, "Count": v["Count"], "Reason": v["Reason"]}
+        for k, v in sorted(rejected_titles.items(), key=lambda x: x[1]["Count"], reverse=True)
+    ])
+    rejected_df.to_csv(CONFIG["OUTPUT_REJECTIONS"], index=False)
+
+    suggested = rejected_df[(rejected_df["Reason"] == "Not in Master List") & (rejected_df["Count"] >= CONFIG["MIN_MENTIONS_FOR_APPROVAL"])]
+    suggested[["Rejected Title", "Count"]].to_csv(CONFIG["OUTPUT_SUGGESTIONS"], index=False)
+
+    if CONFIG["AUTO_APPROVE"] and not suggested.empty:
+        approved_df = suggested.copy()
+        approved_df["Genre"] = "Suggested"
+        approved_df["Year"] = ""
+        approved_df["Language"] = ""
+        approved_df.to_csv(CONFIG["APPROVED_FILE"], index=False)
+        print(f"✅ Auto-approved {len(approved_df)} titles based on mention count.")
+
+def merge_approved_additions(df_master, valid_titles):
+    approved_path = CONFIG["APPROVED_FILE"]
+    if not os.path.exists(approved_path):
+        print(f"[INFO] No approved additions found: {approved_path}")
+        return df_master
+
+    confirm = 'y' if CONFIG["AUTO_APPROVE"] else input("Merge approved additions into the master list? (y/n): ").strip().lower()
+    if confirm != 'y':
+        print("[INFO] Merge cancelled.")
+        return df_master
+
+    approved_df = pd.read_csv(approved_path)
+    approved_df["Normalized Title"] = approved_df["Rejected Title"].astype(str).apply(normalize_title)
+    new_titles = approved_df[~approved_df["Normalized Title"].isin(valid_titles)].copy()
+
+    if not new_titles.empty:
+        new_titles.rename(columns={"Rejected Title": "Movie Title"}, inplace=True)
+        new_titles = new_titles[["Movie Title", "Genre", "Year", "Language"]]
+        df_master = pd.concat([
+            df_master[["Movie Title", "Genre", "Year", "Language"]],
+            new_titles
+        ], ignore_index=True).drop_duplicates(subset="Movie Title")
+        df_master.to_csv(CONFIG["MASTER_LIST_PATH"], index=False)
+        print(f"📌 Added {len(new_titles)} new titles to the master list.")
+
+    return df_master
+
+def main():
+    df_master, valid_titles = load_master_list(CONFIG["MASTER_LIST_PATH"])
+    blacklist = load_blacklist(CONFIG["BLACKLIST_FILE"])
+    comment_files = [f for f in os.listdir(CONFIG["COMMENTS_FOLDER"]) if f.endswith(".txt")]
+    watched_titles = {normalize_title(f) for f in comment_files}
+
+    print("✅ Loaded and normalized TMDb master list")
+    print(f"🔄 Starting processing of {len(comment_files)} files...")
+
+    recommendations, rejected_titles = extract_recommendations(
+        CONFIG["COMMENTS_FOLDER"], valid_titles, watched_titles, blacklist)
+
+    df_output = aggregate_recommendations(recommendations)
+    save_outputs(df_output, rejected_titles)
+
+    df_master = merge_approved_additions(df_master, valid_titles)
+
+    print(f"\n✅ Extracted {len(df_output)} entries from {len(comment_files)} files.")
+    print(f"📄 Output: {CONFIG['OUTPUT_RECOMMENDATIONS']}")
+    print(f"📊 Summary: {CONFIG['OUTPUT_SUMMARY']}")
+    print(f"🖼️ Chart: {CONFIG['OUTPUT_CHART']}")
+    print(f"📎 Rejections: {CONFIG['OUTPUT_REJECTIONS']}")
+    print(f"🧠 Suggestions: {CONFIG['OUTPUT_SUGGESTIONS']}")
+
+if __name__ == "__main__":
+    main()
