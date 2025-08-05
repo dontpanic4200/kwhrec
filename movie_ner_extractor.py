@@ -26,7 +26,7 @@ CONFIG = {
 }
 
 # --- Initialization ---
-nlp = spacy.load("en_core_web_sm")
+nlp = spacy.load("en_core_web_lg")
 
 # --- Utility Functions ---
 def normalize_title(title):
@@ -209,3 +209,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
